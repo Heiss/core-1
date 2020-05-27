@@ -24,6 +24,7 @@ from homeassistant.components.notify import (
     BaseNotificationService,
 )
 from homeassistant.const import (
+    CONF_NAME,
     CONF_PASSWORD,
     CONF_RECIPIENT,
     CONF_RESOURCE,
@@ -60,6 +61,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
         vol.Optional(CONF_ROOM, default=""): cv.string,
         vol.Optional(CONF_TLS, default=True): cv.boolean,
         vol.Optional(CONF_VERIFY, default=True): cv.boolean,
+        vol.Optional(CONF_NAME, default="xmpp"): cv.string,
     }
 )
 
