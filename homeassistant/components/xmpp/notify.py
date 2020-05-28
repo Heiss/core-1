@@ -35,6 +35,8 @@ from homeassistant.const import (
 import homeassistant.helpers.config_validation as cv
 import homeassistant.helpers.template as template_helper
 
+from . import CONF_TLS, CONF_VERIFY
+
 _LOGGER = logging.getLogger(__name__)
 
 ATTR_DATA = "data"
@@ -45,8 +47,6 @@ ATTR_URL = "url"
 ATTR_URL_TEMPLATE = "url_template"
 ATTR_VERIFY = "verify"
 
-CONF_TLS = "tls"
-CONF_VERIFY = "verify"
 
 DEFAULT_CONTENT_TYPE = "application/octet-stream"
 DEFAULT_RESOURCE = "home-assistant"

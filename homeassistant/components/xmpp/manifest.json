@@ -3,6 +3,5 @@
   "name": "Jabber (XMPP)",
   "documentation": "https://www.home-assistant.io/integrations/xmpp",
   "requirements": ["slixmpp-omemo==0.4.0"],
-  "dependencies": ["notify"],
   "codeowners": ["@fabaff", "@flowolf"]
 }

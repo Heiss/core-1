@@ -19,38 +19,40 @@ from slixmpp_omemo import (
 )
 import voluptuous as vol
 
-from homeassistant.components.notify import PLATFORM_SCHEMA
 from homeassistant.const import (
     CONF_NAME,
     CONF_PASSWORD,
-    CONF_RECIPIENT,
     CONF_RESOURCE,
     CONF_ROOM,
     CONF_SENDER,
 )
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.config_validation import PLATFORM_SCHEMA  # noqa: F401
 from homeassistant.helpers.entity import Entity
+
+from . import CONF_TLS, CONF_VERIFY, DEFAULT_NAME
 
 _LOGGER = logging.getLogger(__name__)
 
-CONF_TLS = "tls"
-CONF_VERIFY = "verify"
+
 DEFAULT_RESOURCE = "home-assistant"
-CONF_HOLD_MESSAGE = "message-cache-limit"
+CONF_HOLD_MESSAGE_LIMIT = "message-cache-limit"
 CONF_TEMP_DIR = "omemo-dir"
+CONF_AUTO_ADD = "add-unknown-devices"
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
         vol.Required(CONF_SENDER): cv.string,
         vol.Required(CONF_PASSWORD): cv.string,
+        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
         vol.Optional(CONF_RESOURCE, default=DEFAULT_RESOURCE): cv.string,
         vol.Optional(CONF_ROOM, default=""): cv.string,
+        vol.Optional(CONF_AUTO_ADD, default=False): cv.boolean,
         vol.Optional(CONF_TLS, default=True): cv.boolean,
         vol.Optional(CONF_VERIFY, default=True): cv.boolean,
-        vol.Optional(CONF_HOLD_MESSAGE, default=0): cv.positive_int,
-        vol.Optional(CONF_NAME, default="xmpp"): cv.string,
+        vol.Optional(CONF_HOLD_MESSAGE_LIMIT, default=0): cv.positive_int,
         vol.Optional(CONF_TEMP_DIR, default="/tmp/xmpp"): cv.string,
-    }
+    },
 )
 
 
@@ -63,33 +65,26 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                 config.get(CONF_SENDER),
                 config.get(CONF_RESOURCE),
                 config.get(CONF_PASSWORD),
-                config.get(CONF_RECIPIENT),
                 config.get(CONF_TLS),
                 config.get(CONF_VERIFY),
                 config.get(CONF_ROOM),
-                config.get(CONF_HOLD_MESSAGE),
+                config.get(CONF_HOLD_MESSAGE_LIMIT),
                 hass,
                 config,
             )
         ]
     )
 
+    _LOGGER.debug("done")
+
+    return True
+
 
 class XmppSensor(Entity):
     """Representation of a sensor."""
 
     def __init__(
-        self,
-        sender,
-        resource,
-        password,
-        recipient,
-        tls,
-        verify,
-        room,
-        last_message,
-        hass,
-        config,
+        self, sender, resource, password, tls, verify, room, last_message, hass, config,
     ):
         """Initialize the sensor."""
         self._state = None
@@ -97,11 +92,12 @@ class XmppSensor(Entity):
         self._sender = sender
         self._resource = resource
         self._password = password
-        self._recipient = recipient
         self._tls = tls
         self._verify = verify
         self._room = room
-        self._hold_message = last_message
+        self._hold_message_limit = last_message
+
+        _LOGGER.debug("initialize xmpp")
 
         self._client = Xmpp(
             sender,
@@ -113,6 +109,8 @@ class XmppSensor(Entity):
             last_message=last_message,
             verify_certificate=verify,
         )
+
+        _LOGGER.debug("done")
 
     @property
     def name(self):
@@ -126,9 +124,8 @@ class XmppSensor(Entity):
 
     async def async_update(self):
         """Fetch new state data for the sensor."""
-        self._state = {"attributes": {"messages": self._client.messages}}
-        self._client_message.clear()
-        _LOGGER.debug(f"state: {self._state}")
+        self._state = list(self._client.messages.copy())
+        self._client._messages.clear()
 
 
 class Xmpp(ClientXMPP):
@@ -151,19 +148,21 @@ class Xmpp(ClientXMPP):
         _LOGGER.debug("Initialize")
 
         self.loop = hass.loop
-        self.hass = hass
-        self.config = config
+        self._hass = hass
+        self._config = config
 
         self.eme_ns = "eu.siacs.conversations.axolotl"
 
-        os.makedirs(self.config.get(CONF_TEMP_DIR), exist_ok=True)
+        _LOGGER.debug(self._config)
+
+        os.makedirs(self._config.get(CONF_TEMP_DIR), exist_ok=True)
 
         self.register_plugin("xep_0030")
         self.register_plugin("xep_0199")
         self.register_plugin("xep_0380")
         self.register_plugin(
             "xep_0384",
-            {"data_dir": self.config.get(CONF_TEMP_DIR)},
+            {"data_dir": self._config.get(CONF_TEMP_DIR)},
             module=slixmpp_omemo,
         )
 
@@ -176,7 +175,7 @@ class Xmpp(ClientXMPP):
 
         _LOGGER.debug("message event added.")
 
-        self._hold_message = last_message
+        self._hold_message_limit = last_message
         self._messages = deque(maxlen=last_message)
 
         if room:
@@ -213,7 +212,9 @@ class Xmpp(ClientXMPP):
 
         if not self["xep_0384"].is_encrypted(msg):
             await self.plain_reply(
-                msg, "This message was not encrypted.\n%(body)s" % msg
+                msg,
+                "This message was not encrypted and will not be processed via HASS.\n%(body)s"
+                % msg,
             )
             return None
 
@@ -221,9 +222,15 @@ class Xmpp(ClientXMPP):
             mfrom = msg["from"]
             encrypted = msg["omemo_encrypted"]
             body = self["xep_0384"].decrypt_message(encrypted, mfrom, allow_untrusted)
-            self._messages.append(
-                {"from": mfrom, "message": body, "timestamp": datetime.now()}
-            )
+
+            data = {
+                "from": str(mfrom),
+                "message": body.decode("utf-8"),
+                "timestamp": datetime.timestamp(datetime.now()),
+            }
+            self._messages.append(data)
+            self._hass.bus.fire("xmpp_sensor_message_received", data)
+
             await self.encrypted_reply(msg, "Thanks for sending")
             return None
         except (MissingOwnKey,):
@@ -328,7 +335,9 @@ class Xmpp(ClientXMPP):
                 # untrusted/undecided barejid, so we need to make a decision here.
                 # This is where you prompt your user to ask what to do. In
                 # this bot we will automatically trust undecided recipients.
-                self["xep_0384"].trust(exn.bare_jid, exn.device, exn.ik)
+
+                if self._config.get(CONF_AUTO_ADD):
+                    self["xep_0384"].trust(exn.bare_jid, exn.device, exn.ik)
             # TODO: catch NoEligibleDevicesException
             except EncryptionPrepareException as exn:
                 # This exception is being raised when the library has tried
