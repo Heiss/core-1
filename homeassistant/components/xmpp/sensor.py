@@ -3,11 +3,13 @@ import asyncio
 from collections import deque
 from datetime import datetime
 import logging
+import os
 
 from omemo.exceptions import MissingBundleException
 from slixmpp import JID, ClientXMPP
 from slixmpp.exceptions import IqError, IqTimeout
 from slixmpp.stanza import Message
+import slixmpp_omemo
 from slixmpp_omemo import (
     EncryptionPrepareException,
     MissingOwnKey,
@@ -34,7 +36,8 @@ _LOGGER = logging.getLogger(__name__)
 CONF_TLS = "tls"
 CONF_VERIFY = "verify"
 DEFAULT_RESOURCE = "home-assistant"
-CONF_HOLD_MESSAGE = 0
+CONF_HOLD_MESSAGE = "message-cache-limit"
+CONF_TEMP_DIR = "omemo-dir"
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
@@ -46,6 +49,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
         vol.Optional(CONF_VERIFY, default=True): cv.boolean,
         vol.Optional(CONF_HOLD_MESSAGE, default=0): cv.positive_int,
         vol.Optional(CONF_NAME, default="xmpp"): cv.string,
+        vol.Optional(CONF_TEMP_DIR, default="/tmp/xmpp"): cv.string,
     }
 )
 
@@ -123,6 +127,7 @@ class XmppSensor(Entity):
     async def async_update(self):
         """Fetch new state data for the sensor."""
         self._state = {"attributes": {"messages": self._client.messages}}
+        self._client_message.clear()
         _LOGGER.debug(f"state: {self._state}")
 
 
@@ -149,15 +154,25 @@ class Xmpp(ClientXMPP):
         self.hass = hass
         self.config = config
 
+        self.eme_ns = "eu.siacs.conversations.axolotl"
+
+        os.makedirs(self.config.get(CONF_TEMP_DIR), exist_ok=True)
+
         self.register_plugin("xep_0030")
         self.register_plugin("xep_0199")
         self.register_plugin("xep_0380")
+        self.register_plugin(
+            "xep_0384",
+            {"data_dir": self.config.get(CONF_TEMP_DIR)},
+            module=slixmpp_omemo,
+        )
 
         self.force_starttls = use_tls
         self.use_ipv6 = False
         self.add_event_handler("failed_auth", self.disconnect_on_login_fail)
         self.add_event_handler("session_start", self.session_start)
         self.add_event_handler("message", self.message_handler)
+        self.add_event_handler("message_encryption", self.encrypted_message_handler)
 
         _LOGGER.debug("message event added.")
 
@@ -184,6 +199,10 @@ class Xmpp(ClientXMPP):
 
     async def message_handler(self, msg: Message) -> None:
         """Handle when message received."""
+        asyncio.ensure_future(self.message(msg))
+
+    async def encrypted_message_handler(self, msg) -> None:
+        """Handle when encrypted message received."""
         asyncio.ensure_future(self.message(msg))
 
     async def message(self, msg: Message, allow_untrusted: bool = False) -> None:
