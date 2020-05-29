@@ -125,7 +125,6 @@ class XmppSensor(Entity):
     async def async_update(self):
         """Fetch new state data for the sensor."""
         self._state = list(self._client.messages.copy())
-        self._client._messages.clear()
 
 
 class Xmpp(ClientXMPP):
